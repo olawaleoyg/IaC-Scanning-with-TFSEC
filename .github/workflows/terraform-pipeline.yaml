@@ -1,0 +1,198 @@
+name: Github Actions CI/CD pipeline for Terraform
+# run-name: ${{ github.actor }} Running Github Actions CI/CD pipeline for Terraform
+
+# The workflow is configured to trigger on push and pull request events.
+on:
+  push:
+    branches:
+      - main
+      - feature/*
+  pull_request:
+    branches:
+      - main
+      - feature/*
+
+# AWS credentials and other sensitive information are securely stored using Github Secrets
+env:
+    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    TF_VAR_region: ${{ secrets.TF_VAR_REGION }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        
+      - name: Setup tfsec
+        uses: aquasecurity/tfsec-sarif-action@v0.1.4
+        with:
+          sarif_file: tfsec.sarif
+
+      # - name: Scan Terraform with TFSec
+      #   run: |
+      #     ls latr
+      #     tfsec . 
+      #     # tfsec . -s --format json > tfsec-output.json
+
+      # - name: Show Full TFSec Output
+      #   run: |
+      #     echo "Full TFSec Output:"
+      #     cat tfsec-output.json
+          
+      # - name: Check for Critical or High TFSec Issues
+      #   id: check_tfsec
+      #   run: |
+      #     CRITICAL_COUNT=$(jq '[.results[] | select(.severity == "CRITICAL")] | length' tfsec-output.json)
+      #     HIGH_COUNT=$(jq '[.results[] | select(.severity == "HIGH")] | length' tfsec-output.json)
+
+      #     echo "Critical issues found: $CRITICAL_COUNT"
+      #     echo "High issues found: $HIGH_COUNT"
+
+      #     if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+      #       echo "TFSec found critical or high issues. Failing the pipeline."
+      #       exit 1
+      #     else
+      #       echo "No critical or high issues found."
+      #     fi
+
+      # - name: Check for Medium/Low TFSec Issues and Log Them
+      #   run: |
+      #     MEDIUM_COUNT=$(jq '[.results[] | select(.severity == "MEDIUM")] | length' tfsec-output.json)
+      #     LOW_COUNT=$(jq '[.results[] | select(.severity == "LOW")] | length' tfsec-output.json)
+      
+      #     if [ "$MEDIUM_COUNT" -gt 0 ] || [ "$LOW_COUNT" -gt 0 ]; then
+      #       echo "Medium issues found: $MEDIUM_COUNT"
+      #       echo "Low issues found: $LOW_COUNT"
+      #       jq '.results[] | select(.severity == "MEDIUM" or .severity == "LOW")' tfsec-output.json
+      #     else
+      #       echo "No medium or low issues found."
+      #     fi
+        
+      - name: Initialize Terraform
+        run: terraform init
+
+      - name: Validate Terraform
+        run: terraform validate
+
+    # For other environments, the workflow only plans changes on feature 
+    # branches but doesn't apply them.
+#       - name: Plan Terraform changes on prod
+#         id: plan-prod
+#         if: github.ref != 'refs/heads/main'
+#         run: terraform plan -var-file=Environments/prod/terraform.tfvars -out=plan-prod.tfplan
+
+#       - name: Plan Terraform changes on staging
+#         id: plan-staging
+#         if: github.ref != 'refs/heads/main'
+#         run: terraform plan -var-file=Environments/staging/terraform.tfvars -out=plan-staging.tfplan
+       
+#     # The workflow plans and applies Terraform changes to the "sandbox" 
+#     # environment when working on feature branches.
+#       - name: Plan Terraform changes (Sandbox only)
+#         id: plan-sandbox
+#         if: github.ref != 'refs/heads/main'
+#         run: terraform plan -var-file=Environments/sandbox/terraform.tfvars -out=plan-sandbox.tfplan
+
+#       - name: Apply Terraform changes (Sandbox only)
+#         if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
+#         run: |
+#           terraform apply -auto-approve plan-sandbox.tfplan > terraform.log 2>&1 || \
+#           if grep -q 'BucketAlreadyExists' terraform.log; then
+#             echo "Skipping apply: S3 bucket already exists."
+#             exit 0
+#           elif grep -q 'NoSuchBucket' terraform.log; then
+#             echo "S3 bucket does not exist yet. Proceeding."
+#             exit 0
+#           else
+#             echo "Terraform apply failed with an unexpected error."
+#             exit 1
+#           fi
+        
+#     #  This step checks if the pipeline has failed and triggers a slack notification.  
+#       - name: Notify Slack on Failure
+#         if: failure()  # Ensures the step runs only if previous steps failed
+#         uses: slackapi/slack-github-action@v1.26.0
+#         with:
+#           payload: |
+#             {
+#               "text": "❌ Terraform Pipeline failed in repository ${{ github.repository }} on branch ${{ github.ref_name }} (commit: ${{ github.sha }}). View details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}   
+        
+# # The workflow ensures that terraform apply can only be executed on the main branch for
+# # production environments. And A manual approval step is implemented in the workflow before 
+# applying changes to production.
+  deploy-to-prod:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    needs: terraform
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+       
+      - name: Initialize Terraform
+        run: terraform init
+
+      - name: Validate Terraform
+        run: terraform validate
+    
+#       - name: Plan Terraform changes
+#         run: terraform plan -var-file=Environments/prod/terraform.tfvars -out=plan-prod.tfplan
+
+#       - name: Manual Approval
+#         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#         id: approval
+#         uses: trstringer/manual-approval@v1
+#         with:
+#           approvers: ola, adey
+#           secret: ${{ secrets.GITHUB_TOKEN }}
+#           minimum-approvals: 1
+#           issue-title: "Manual approval required for samanja Terraform pipeline"
+#           issue-body: |
+#             Workflow is pending manual review.
+#             URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+#             Required approvers: [ola, adey]
+#             Respond "approved", "approve", "lgtm", "yes" to continue workflow or "denied", "deny", "no" to cancel.
+
+#       - name: Terraform Apply
+#         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && ${{ steps.approval.outputs.approved }} == 'true'
+#         run: terraform apply --auto-approve plan-prod.tfplan
+        
+#       #  This step checks if the pipeline has failed and triggers a slack notification.  
+#       - name: Notify Slack on Failure
+#         if: failure()  # Ensures the step runs only if previous steps failed
+#         uses: slackapi/slack-github-action@v1.26.0
+#         with:
+#           payload: |
+#             {
+#               "text": "❌ Terraform Pipeline failed in repository ${{ github.repository }} on branch ${{ github.ref_name }} (commit: ${{ github.sha }}). View details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+#             }
+#         env:
+#           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}  
